@@ -317,6 +317,12 @@ def init_auth_db():
         ''')
         conn.commit()
 
+        # Device-lock column. IF NOT EXISTS makes this safe to run against a
+        # users table that already existed before this feature was added —
+        # no separate manual migration step needed.
+        cur.execute('ALTER TABLE users ADD COLUMN IF NOT EXISTS device_id VARCHAR(255)')
+        conn.commit()
+
         cur.execute('SELECT COUNT(*) AS count FROM users')
         count = cur.fetchone()['count']
         if count == 0:
@@ -1191,16 +1197,26 @@ def request_otp():
 @app.route('/api/auth/verify-otp', methods=['POST', 'OPTIONS'])
 def verify_otp():
     """Person enters the OTP → checked against the fixed TEMP_OTP value.
-    On success, returns the user's profile (email, displayName, role)."""
+    On success, returns the user's profile (email, displayName, role).
+
+    Device lock: the client sends a deviceId (a random ID generated once
+    on first app launch, persisted locally — NOT a network IP, since
+    those change constantly). The FIRST successful login for an account
+    binds it to that deviceId. Every login after that must send the same
+    deviceId, or it's rejected — so a stolen/shared email+OTP can't be
+    used to log the same account in from a different phone."""
     if request.method == 'OPTIONS':
         return _cors_ok()
 
     data = request.get_json() or {}
     email = (data.get('email') or '').strip().lower()
     otp = (data.get('otp') or '').strip()
+    device_id = (data.get('deviceId') or '').strip()
 
     if not email or not otp:
         return jsonify({'success': False, 'message': 'Email and OTP are required'}), 400
+    if not device_id:
+        return jsonify({'success': False, 'message': 'Missing device ID'}), 400
 
     if otp != TEMP_OTP:
         return jsonify({'success': False, 'message': 'Invalid OTP'}), 401
@@ -1215,8 +1231,28 @@ def verify_otp():
             conn.close()
             return jsonify({'success': False, 'message': 'No account found with this email'}), 404
 
-        cur.execute('UPDATE users SET last_login = NOW() WHERE email = %s', (email,))
-        conn.commit()
+        existing_device = user['device_id']
+
+        if existing_device is None:
+            # First login ever for this account — bind it to this device.
+            cur.execute(
+                'UPDATE users SET device_id = %s, last_login = NOW() WHERE email = %s',
+                (device_id, email)
+            )
+            conn.commit()
+        elif existing_device != device_id:
+            # Bound to a DIFFERENT device already — reject.
+            cur.close()
+            conn.close()
+            return jsonify({
+                'success': False,
+                'message': 'This account is already signed in on another device. Contact an admin to reset it.'
+            }), 403
+        else:
+            # Same device as before — normal login.
+            cur.execute('UPDATE users SET last_login = NOW() WHERE email = %s', (email,))
+            conn.commit()
+
         cur.close()
         conn.close()
     except Exception as e:
@@ -1236,17 +1272,51 @@ def verify_otp():
 
 @app.route('/api/auth/users', methods=['GET'])
 def list_users():
-    """List all accounts — admin/debug use."""
+    """List all accounts — admin/debug use. device_id shows which phone
+    (if any) each account is currently locked to."""
     try:
         conn = get_db()
         cur = conn.cursor()
-        cur.execute('SELECT id, email, display_name, role, created_at, last_login FROM users ORDER BY id')
+        cur.execute('SELECT id, email, display_name, role, device_id, created_at, last_login FROM users ORDER BY id')
         users = cur.fetchall()
         cur.close()
         conn.close()
         return jsonify({'success': True, 'count': len(users), 'users': users}), 200
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/auth/users/reset-device', methods=['POST', 'OPTIONS'])
+def reset_user_device():
+    """Clears the device lock for one account (e.g. they got a new phone,
+    or you're testing). The next OTP login from ANY device will re-bind.
+    Admin/debug use — lock this down once you have real admin auth."""
+    if request.method == 'OPTIONS':
+        return _cors_ok()
+
+    data = request.get_json() or {}
+    email = (data.get('email') or '').strip().lower()
+    if not email:
+        return jsonify({'success': False, 'message': 'Email is required'}), 400
+
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute(
+            'UPDATE users SET device_id = NULL WHERE email = %s RETURNING id',
+            (email,)
+        )
+        row = cur.fetchone()
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'Database error: {e}'}), 500
+
+    if row is None:
+        return jsonify({'success': False, 'message': 'No account found with this email'}), 404
+
+    return jsonify({'success': True, 'message': f'Device lock cleared for {email}'}), 200
 
 
 @app.route('/api/auth/users', methods=['POST', 'OPTIONS'])
@@ -1317,8 +1387,9 @@ def index():
             {'path': '/api/live_operations/clear', 'method': 'POST', 'description': 'Delete ALL operations + photos'},
             {'path': '/api/auth/request-otp', 'method': 'POST', 'description': 'Step 1: request OTP for an email (Postgres-backed)'},
             {'path': '/api/auth/verify-otp', 'method': 'POST', 'description': 'Step 2: verify OTP and log in'},
-            {'path': '/api/auth/users', 'method': 'GET', 'description': 'List all user accounts'},
+            {'path': '/api/auth/users', 'method': 'GET', 'description': 'List all user accounts (includes device lock status)'},
             {'path': '/api/auth/users', 'method': 'POST', 'description': 'Create a new user account'},
+            {'path': '/api/auth/users/reset-device', 'method': 'POST', 'description': 'Clear a device lock (e.g. user got a new phone)'},
         ]
     }), 200
 
