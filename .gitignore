@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+uploads/
+metadata/
+operations/
+live_data.json
+received_images.json
+.venv/
