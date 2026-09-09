@@ -11,6 +11,8 @@ import threading
 import sys
 from collections import deque
 import base64
+import psycopg2
+import psycopg2.extras
 
 app = Flask(__name__)
 CORS(app, origins='*')
@@ -34,6 +36,27 @@ try:
     print(f"✅ Operations folder: {OPERATIONS_FOLDER}")
 except Exception as e:
     print(f"❌ Error creating folders: {e}")
+
+# ======================== AUTH / POSTGRES CONFIGURATION ========================
+DATABASE_URL = os.environ.get('DATABASE_URL', '')
+# Render (and some other hosts) hand out "postgres://..." but psycopg2's
+# newer versions want "postgresql://..." — normalize it either way.
+if DATABASE_URL.startswith('postgres://'):
+    DATABASE_URL = DATABASE_URL.replace('postgres://', 'postgresql://', 1)
+
+# TEMPORARY: fixed OTP for every login attempt. Replace this with a real
+# SMS/email OTP provider (Twilio, SES, etc.) later — search for TEMP_OTP
+# in this file when you're ready to wire that in.
+TEMP_OTP = '1234'
+
+# "login data will static" — same 4 accounts from the old Flutter
+# AuthService, now seeded into Postgres once on first startup.
+STATIC_USERS = [
+    {'email': 'superadmin@system.com', 'password': 'securepass', 'displayName': 'System Admin', 'role': 'superadmin'},
+    {'email': 'company@company.com', 'password': 'securepass', 'displayName': 'Company Admin', 'role': 'companyadmin'},
+    {'email': 'controller@drone.com', 'password': 'securepass', 'displayName': 'Drone Controller', 'role': 'controller'},
+    {'email': 'user@drone.com', 'password': 'securepass', 'displayName': 'Regular User', 'role': 'user'},
+]
 
 # ======================== LIVE DATA STORAGE (LEGACY) ========================
 # Kept for backward compatibility / the old single-point endpoints.
@@ -82,7 +105,7 @@ _LIGHTNESS_STEPS = [55, 38, 70, 30, 82, 46, 64, 25]
 def _cors_ok():
     r = jsonify({'status': 'ok'})
     r.headers.add('Access-Control-Allow-Origin', '*')
-    r.headers.add('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+    r.headers.add('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, DELETE')
     r.headers.add('Access-Control-Allow-Headers', 'Content-Type')
     return r
 
@@ -262,6 +285,56 @@ def load_received_images_from_file():
             print(f"✅ Loaded {len(received_images)} received images")
     except Exception as e:
         print(f"❌ Error loading received images: {e}")
+
+
+# ======================== AUTH HELPERS (POSTGRES) ========================
+
+def get_db():
+    """One connection per request — fine at this traffic level with a
+    single gunicorn worker. Swap for a connection pool later if needed."""
+    return psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
+
+
+def init_auth_db():
+    """Creates the users table if missing and seeds the static accounts
+    exactly once. Safe to call on every startup."""
+    if not DATABASE_URL:
+        print('⚠️ DATABASE_URL not set — /api/auth/* routes will fail until you add it on Render')
+        return
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                id SERIAL PRIMARY KEY,
+                email VARCHAR(255) UNIQUE NOT NULL,
+                password VARCHAR(255),
+                display_name VARCHAR(255),
+                role VARCHAR(50) NOT NULL DEFAULT 'user',
+                created_at TIMESTAMP DEFAULT NOW(),
+                last_login TIMESTAMP
+            )
+        ''')
+        conn.commit()
+
+        cur.execute('SELECT COUNT(*) AS count FROM users')
+        count = cur.fetchone()['count']
+        if count == 0:
+            for u in STATIC_USERS:
+                cur.execute(
+                    'INSERT INTO users (email, password, display_name, role) '
+                    'VALUES (%s, %s, %s, %s) ON CONFLICT (email) DO NOTHING',
+                    (u['email'], u['password'], u['displayName'], u['role'])
+                )
+            conn.commit()
+            print(f'✅ Seeded {len(STATIC_USERS)} static users into Postgres')
+        else:
+            print(f'✅ Users table already has {count} row(s)')
+
+        cur.close()
+        conn.close()
+    except Exception as e:
+        print(f'❌ init_auth_db error: {e}')
 
 
 # ======================== API ENDPOINTS ========================
@@ -987,27 +1060,6 @@ def get_live_operation_detail(operation_id):
     return jsonify({'success': True, 'operation': op}), 200
 
 
-# ======================== 13. HEALTH CHECK ========================
-
-@app.route('/health', methods=['GET'])
-def health_check():
-    op_count = 0
-    if os.path.exists(OPERATIONS_FOLDER):
-        op_count = len([f for f in os.listdir(OPERATIONS_FOLDER) if f.endswith('.json')])
-    return jsonify({
-        'status': 'ok',
-        'timestamp': datetime.datetime.now().isoformat(),
-        'upload_folder': UPLOAD_FOLDER,
-        'metadata_folder': METADATA_FOLDER,
-        'operations_folder': OPERATIONS_FOLDER,
-        'live_data_points': len(live_data_store),
-        'received_images': len(received_images),
-        'active_operations': len(active_operations),
-        'total_operations': op_count,
-        'upload_folder_exists': os.path.exists(UPLOAD_FOLDER),
-        'metadata_folder_exists': os.path.exists(METADATA_FOLDER)
-    }), 200
-
 @app.route('/api/live_operations/<operation_id>', methods=['DELETE', 'OPTIONS'])
 def delete_live_operation(operation_id):
     """Deletes an operation's record file and its whole photo folder."""
@@ -1081,13 +1133,166 @@ def clear_live_operations():
     return jsonify({'success': True, 'deletedOperations': deleted}), 200
 
 
-# ======================== 14. INDEX / API INFO ========================
+# ======================== 13. HEALTH CHECK ========================
+
+@app.route('/health', methods=['GET'])
+def health_check():
+    op_count = 0
+    if os.path.exists(OPERATIONS_FOLDER):
+        op_count = len([f for f in os.listdir(OPERATIONS_FOLDER) if f.endswith('.json')])
+    return jsonify({
+        'status': 'ok',
+        'timestamp': datetime.datetime.now().isoformat(),
+        'upload_folder': UPLOAD_FOLDER,
+        'metadata_folder': METADATA_FOLDER,
+        'operations_folder': OPERATIONS_FOLDER,
+        'live_data_points': len(live_data_store),
+        'received_images': len(received_images),
+        'active_operations': len(active_operations),
+        'total_operations': op_count,
+        'upload_folder_exists': os.path.exists(UPLOAD_FOLDER),
+        'metadata_folder_exists': os.path.exists(METADATA_FOLDER),
+        'database_configured': bool(DATABASE_URL),
+    }), 200
+
+
+# ======================== 14. AUTH (POSTGRES + OTP LOGIN) ========================
+
+@app.route('/api/auth/request-otp', methods=['POST', 'OPTIONS'])
+def request_otp():
+    """Person enters their email → we confirm the account exists and
+    (for now) just print the fixed OTP to the server logs instead of
+    actually sending it anywhere."""
+    if request.method == 'OPTIONS':
+        return _cors_ok()
+
+    data = request.get_json() or {}
+    email = (data.get('email') or '').strip().lower()
+    if not email:
+        return jsonify({'success': False, 'message': 'Email is required'}), 400
+
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute('SELECT id FROM users WHERE email = %s', (email,))
+        user = cur.fetchone()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'Database error: {e}'}), 500
+
+    if user is None:
+        return jsonify({'success': False, 'message': 'No account found with this email'}), 404
+
+    print(f'📩 [TEMP OTP] Code for {email}: {TEMP_OTP}')
+    return jsonify({'success': True, 'message': f'OTP sent to {email}'}), 200
+
+
+@app.route('/api/auth/verify-otp', methods=['POST', 'OPTIONS'])
+def verify_otp():
+    """Person enters the OTP → checked against the fixed TEMP_OTP value.
+    On success, returns the user's profile (email, displayName, role)."""
+    if request.method == 'OPTIONS':
+        return _cors_ok()
+
+    data = request.get_json() or {}
+    email = (data.get('email') or '').strip().lower()
+    otp = (data.get('otp') or '').strip()
+
+    if not email or not otp:
+        return jsonify({'success': False, 'message': 'Email and OTP are required'}), 400
+
+    if otp != TEMP_OTP:
+        return jsonify({'success': False, 'message': 'Invalid OTP'}), 401
+
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute('SELECT * FROM users WHERE email = %s', (email,))
+        user = cur.fetchone()
+        if user is None:
+            cur.close()
+            conn.close()
+            return jsonify({'success': False, 'message': 'No account found with this email'}), 404
+
+        cur.execute('UPDATE users SET last_login = NOW() WHERE email = %s', (email,))
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'Database error: {e}'}), 500
+
+    return jsonify({
+        'success': True,
+        'message': 'Login successful',
+        'user': {
+            'id': user['id'],
+            'email': user['email'],
+            'displayName': user['display_name'],
+            'role': user['role'],
+        }
+    }), 200
+
+
+@app.route('/api/auth/users', methods=['GET'])
+def list_users():
+    """List all accounts — admin/debug use."""
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute('SELECT id, email, display_name, role, created_at, last_login FROM users ORDER BY id')
+        users = cur.fetchall()
+        cur.close()
+        conn.close()
+        return jsonify({'success': True, 'count': len(users), 'users': users}), 200
+    except Exception as e:
+        return jsonify({'success': False, 'message': str(e)}), 500
+
+
+@app.route('/api/auth/users', methods=['POST', 'OPTIONS'])
+def create_user():
+    """Add a new account — admin/debug use while login data is static.
+    Lock this down (or remove it) once you have real admin auth in front
+    of it."""
+    if request.method == 'OPTIONS':
+        return _cors_ok()
+
+    data = request.get_json() or {}
+    email = (data.get('email') or '').strip().lower()
+    display_name = (data.get('displayName') or email.split('@')[0]).strip()
+    role = (data.get('role') or 'user').strip()
+
+    if not email:
+        return jsonify({'success': False, 'message': 'Email is required'}), 400
+
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute(
+            'INSERT INTO users (email, display_name, role) VALUES (%s, %s, %s) '
+            'ON CONFLICT (email) DO NOTHING RETURNING id',
+            (email, display_name, role)
+        )
+        row = cur.fetchone()
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'Database error: {e}'}), 500
+
+    if row is None:
+        return jsonify({'success': False, 'message': 'That email is already registered'}), 409
+
+    return jsonify({'success': True, 'message': 'User created', 'id': row['id']}), 201
+
+
+# ======================== 15. INDEX / API INFO ========================
 
 @app.route('/', methods=['GET'])
 def index():
     return jsonify({
         'name': 'Drone Ranger API',
-        'version': '3.0.0',
+        'version': '3.1.0',
         'endpoints': [
             {'path': '/', 'method': 'GET', 'description': 'API info'},
             {'path': '/health', 'method': 'GET', 'description': 'Health check'},
@@ -1108,6 +1313,12 @@ def index():
             {'path': '/api/live_operations/<id>/stop', 'method': 'POST', 'description': 'Stop and finalize an operation (tap STOP)'},
             {'path': '/api/live_operations', 'method': 'GET', 'description': 'List all operations (summary)'},
             {'path': '/api/live_operations/<id>', 'method': 'GET', 'description': 'Get full operation detail + points'},
+            {'path': '/api/live_operations/<id>', 'method': 'DELETE', 'description': 'Delete an operation + its photos'},
+            {'path': '/api/live_operations/clear', 'method': 'POST', 'description': 'Delete ALL operations + photos'},
+            {'path': '/api/auth/request-otp', 'method': 'POST', 'description': 'Step 1: request OTP for an email (Postgres-backed)'},
+            {'path': '/api/auth/verify-otp', 'method': 'POST', 'description': 'Step 2: verify OTP and log in'},
+            {'path': '/api/auth/users', 'method': 'GET', 'description': 'List all user accounts'},
+            {'path': '/api/auth/users', 'method': 'POST', 'description': 'Create a new user account'},
         ]
     }), 200
 
@@ -1115,6 +1326,7 @@ def index():
 # ======================== LOAD DATA ON STARTUP ========================
 load_live_data_from_file()
 load_received_images_from_file()
+init_auth_db()
 
 # Start the background sweeper that auto-closes stale "active" operations
 # (e.g. app crashed mid-stream without hitting Stop).
@@ -1127,11 +1339,12 @@ print(f"📁 Metadata folder: {METADATA_FOLDER}")
 print(f"📁 Operations folder: {OPERATIONS_FOLDER}")
 print(f"📊 Live data points: {len(live_data_store)}")
 print(f"🖼️ Received images: {len(received_images)}")
+print(f"🔐 Database configured: {bool(DATABASE_URL)}")
 print("=" * 50)
 
-# ======================== FOR PYTHONANYWHERE ========================
-# DO NOT use app.run() on PythonAnywhere!
-# PythonAnywhere uses the WSGI server automatically.
+# ======================== FOR RENDER / PYTHONANYWHERE ========================
+# DO NOT use app.run() on Render or PythonAnywhere — both use a WSGI
+# server (gunicorn on Render) that imports `app` directly from this file.
 
 # If you want to test locally, uncomment the line below:
 # if __name__ == '__main__':
