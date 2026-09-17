@@ -2778,12 +2778,32 @@ def reset_user_device():
             'message': 'Server misconfigured: DATABASE_URL is not set'
         }), 500
 
-    data = request.get_json() or {}
+    # --- Robust body parsing ---
+    data = request.get_json(silent=True)
+    if data is None:
+        # Fall back: parse the raw bytes ourselves.
+        raw = request.get_data(as_text=True) or ''
+        print(f'⚠️ reset-device raw body ({len(raw)} bytes): {raw!r}')
+        print(f'⚠️ Content-Type: {request.headers.get("Content-Type")}')
+        try:
+            data = json.loads(raw) if raw else {}
+        except Exception as e:
+            return jsonify({'success': False, 'message': f'Invalid JSON: {e}'}), 400
+
+    if not isinstance(data, dict):
+        return jsonify({'success': False, 'message': 'Body must be a JSON object'}), 400
+
     email = (data.get('email') or '').strip().lower()
     user_id = data.get('userId') or data.get('id')
 
+    print(f'🔎 reset-device parsed: email={email!r} userId={user_id!r}')
+
     if not email and not user_id:
-        return jsonify({'success': False, 'message': 'Email or userId is required'}), 400
+        return jsonify({
+            'success': False,
+            'message': 'Email or userId is required',
+            'received': data,
+        }), 400
 
     conn = None
     cur = None
@@ -2818,7 +2838,6 @@ def reset_user_device():
         }), 200
 
     except Exception as e:
-        # Log full traceback to Render logs so you can see the real cause.
         import traceback
         traceback.print_exc()
         return jsonify({'success': False, 'message': f'Database error: {e}'}), 500
@@ -2830,7 +2849,6 @@ def reset_user_device():
                 conn.close()
         except Exception:
             pass
-
 @app.route('/api/auth/users', methods=['POST', 'OPTIONS'])
 def create_user():
     """Add a new account — admin/debug use while login data is static.
