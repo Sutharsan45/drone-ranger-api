@@ -2707,6 +2707,31 @@ def list_users():
     except Exception as e:
         return jsonify({'success': False, 'message': str(e)}), 500
 
+@app.route('/api/auth/users/<int:user_id>', methods=['GET', 'OPTIONS'])
+def get_user(user_id):
+    """Fetch one user's details. Complements PUT/DELETE below — the admin
+    control panel calls this to populate the edit screen."""
+    if request.method == 'OPTIONS':
+        return _cors_ok()
+
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute(
+            'SELECT id, email, display_name, role, device_id, created_at, last_login '
+            'FROM users WHERE id = %s',
+            (user_id,)
+        )
+        user = cur.fetchone()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'Database error: {e}'}), 500
+
+    if user is None:
+        return jsonify({'success': False, 'message': 'User not found'}), 404
+
+    return jsonify({'success': True, 'user': user}), 200
 
 @app.route('/api/auth/users/reset-device', methods=['POST', 'OPTIONS'])
 def reset_user_device():
