@@ -2733,26 +2733,67 @@ def get_user(user_id):
 
     return jsonify({'success': True, 'user': user}), 200
 
+# @app.route('/api/auth/users/reset-device', methods=['POST', 'OPTIONS'])
+# def reset_user_device():
+#     """Clears the device lock for one account (e.g. they got a new phone,
+#     or you're testing). The next OTP login from ANY device will re-bind.
+#     Admin/debug use — lock this down once you have real admin auth."""
+#     if request.method == 'OPTIONS':
+#         return _cors_ok()
+
+#     data = request.get_json() or {}
+#     email = (data.get('email') or '').strip().lower()
+#     if not email:
+#         return jsonify({'success': False, 'message': 'Email is required'}), 400
+
+#     try:
+#         conn = get_db()
+#         cur = conn.cursor()
+#         cur.execute(
+#             'UPDATE users SET device_id = NULL WHERE email = %s RETURNING id',
+#             (email,)
+#         )
+#         row = cur.fetchone()
+#         conn.commit()
+#         cur.close()
+#         conn.close()
+#     except Exception as e:
+#         return jsonify({'success': False, 'message': f'Database error: {e}'}), 500
+
+#     if row is None:
+#         return jsonify({'success': False, 'message': 'No account found with this email'}), 404
+
+#     return jsonify({'success': True, 'message': f'Device lock cleared for {email}'}), 200
 @app.route('/api/auth/users/reset-device', methods=['POST', 'OPTIONS'])
 def reset_user_device():
-    """Clears the device lock for one account (e.g. they got a new phone,
-    or you're testing). The next OTP login from ANY device will re-bind.
-    Admin/debug use — lock this down once you have real admin auth."""
+    """Clears the device lock for one account. Accepts either
+    {'email': '...'} or {'userId': 2} so the app can send whichever
+    it has handy."""
     if request.method == 'OPTIONS':
         return _cors_ok()
 
     data = request.get_json() or {}
     email = (data.get('email') or '').strip().lower()
-    if not email:
-        return jsonify({'success': False, 'message': 'Email is required'}), 400
+    user_id = data.get('userId') or data.get('id')
+
+    if not email and not user_id:
+        return jsonify({'success': False, 'message': 'Email or userId is required'}), 400
 
     try:
         conn = get_db()
         cur = conn.cursor()
-        cur.execute(
-            'UPDATE users SET device_id = NULL WHERE email = %s RETURNING id',
-            (email,)
-        )
+
+        if email:
+            cur.execute(
+                'UPDATE users SET device_id = NULL WHERE email = %s RETURNING id, email',
+                (email,)
+            )
+        else:
+            cur.execute(
+                'UPDATE users SET device_id = NULL WHERE id = %s RETURNING id, email',
+                (int(user_id),)
+            )
+
         row = cur.fetchone()
         conn.commit()
         cur.close()
@@ -2761,10 +2802,12 @@ def reset_user_device():
         return jsonify({'success': False, 'message': f'Database error: {e}'}), 500
 
     if row is None:
-        return jsonify({'success': False, 'message': 'No account found with this email'}), 404
+        return jsonify({'success': False, 'message': 'No matching account found'}), 404
 
-    return jsonify({'success': True, 'message': f'Device lock cleared for {email}'}), 200
-
+    return jsonify({
+        'success': True,
+        'message': f"Device lock cleared for {row['email']}",
+    }), 200
 
 @app.route('/api/auth/users', methods=['POST', 'OPTIONS'])
 def create_user():
