@@ -2772,6 +2772,12 @@ def reset_user_device():
     if request.method == 'OPTIONS':
         return _cors_ok()
 
+    if not DATABASE_URL:
+        return jsonify({
+            'success': False,
+            'message': 'Server misconfigured: DATABASE_URL is not set'
+        }), 500
+
     data = request.get_json() or {}
     email = (data.get('email') or '').strip().lower()
     user_id = data.get('userId') or data.get('id')
@@ -2779,6 +2785,8 @@ def reset_user_device():
     if not email and not user_id:
         return jsonify({'success': False, 'message': 'Email or userId is required'}), 400
 
+    conn = None
+    cur = None
     try:
         conn = get_db()
         cur = conn.cursor()
@@ -2789,25 +2797,39 @@ def reset_user_device():
                 (email,)
             )
         else:
+            try:
+                uid = int(user_id)
+            except (TypeError, ValueError):
+                return jsonify({'success': False, 'message': 'userId must be an integer'}), 400
             cur.execute(
                 'UPDATE users SET device_id = NULL WHERE id = %s RETURNING id, email',
-                (int(user_id),)
+                (uid,)
             )
 
         row = cur.fetchone()
         conn.commit()
-        cur.close()
-        conn.close()
+
+        if row is None:
+            return jsonify({'success': False, 'message': 'No matching account found'}), 404
+
+        return jsonify({
+            'success': True,
+            'message': f"Device lock cleared for {row['email']}",
+        }), 200
+
     except Exception as e:
+        # Log full traceback to Render logs so you can see the real cause.
+        import traceback
+        traceback.print_exc()
         return jsonify({'success': False, 'message': f'Database error: {e}'}), 500
-
-    if row is None:
-        return jsonify({'success': False, 'message': 'No matching account found'}), 404
-
-    return jsonify({
-        'success': True,
-        'message': f"Device lock cleared for {row['email']}",
-    }), 200
+    finally:
+        try:
+            if cur is not None:
+                cur.close()
+            if conn is not None:
+                conn.close()
+        except Exception:
+            pass
 
 @app.route('/api/auth/users', methods=['POST', 'OPTIONS'])
 def create_user():
