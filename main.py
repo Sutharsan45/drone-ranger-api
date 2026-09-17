@@ -2662,7 +2662,7 @@ def verify_otp():
                 (device_id, email)
             )
             conn.commit()
-        elif existing_device != device_id:
+        elif existing_device == device_id:
             # Bound to a DIFFERENT device already — reject.
             cur.close()
             conn.close()
