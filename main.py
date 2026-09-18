@@ -1473,11 +1473,42 @@ TEMP_OTP = '1234'
 
 # "login data will static" — same 4 accounts from the old Flutter
 # AuthService, now seeded into Postgres once on first startup.
+# STATIC_USERS = [
+#     {'email': 'superadmin@system.com', 'password': 'securepass', 'displayName': 'System Admin', 'role': 'superadmin'},
+#     {'email': 'company@company.com', 'password': 'securepass', 'displayName': 'Company Admin', 'role': 'companyadmin'},
+#     {'email': 'controller@drone.com', 'password': 'securepass', 'displayName': 'Drone Controller', 'role': 'controller'},
+#     {'email': 'user@drone.com', 'password': 'securepass', 'displayName': 'Regular User', 'role': 'user'},
+# ]
 STATIC_USERS = [
     {'email': 'superadmin@system.com', 'password': 'securepass', 'displayName': 'System Admin', 'role': 'superadmin'},
     {'email': 'company@company.com', 'password': 'securepass', 'displayName': 'Company Admin', 'role': 'companyadmin'},
     {'email': 'controller@drone.com', 'password': 'securepass', 'displayName': 'Drone Controller', 'role': 'controller'},
-    {'email': 'user@drone.com', 'password': 'securepass', 'displayName': 'Regular User', 'role': 'user'},
+    {'email': 'user1@drone.com', 'password': 'securepass', 'displayName': 'User1', 'role': 'user'},
+    {'email': 'user2@drone.com', 'password': 'securepass', 'displayName': 'User2', 'role': 'user'},
+    {'email': 'user3@drone.com', 'password': 'securepass', 'displayName': 'User3', 'role': 'user'},
+    {'email': 'user4@drone.com', 'password': 'securepass', 'displayName': 'User4', 'role': 'user'},
+    {'email': 'user5@drone.com', 'password': 'securepass', 'displayName': 'User5', 'role': 'user'},
+    {'email': 'user6@drone.com', 'password': 'securepass', 'displayName': 'User6', 'role': 'user'},
+    {'email': 'user7@drone.com', 'password': 'securepass', 'displayName': 'User7', 'role': 'user'},
+    {'email': 'user8@drone.com', 'password': 'securepass', 'displayName': 'User8', 'role': 'user'},
+    {'email': 'user9@drone.com', 'password': 'securepass', 'displayName': 'User9', 'role': 'user'},
+    {'email': 'user10@drone.com', 'password': 'securepass', 'displayName': 'User10', 'role': 'user'},
+    {'email': 'user11@drone.com', 'password': 'securepass', 'displayName': 'User11', 'role': 'user'},
+    {'email': 'user12@drone.com', 'password': 'securepass', 'displayName': 'User12', 'role': 'user'},
+    {'email': 'user13@drone.com', 'password': 'securepass', 'displayName': 'User13', 'role': 'user'},
+    {'email': 'user14@drone.com', 'password': 'securepass', 'displayName': 'User14', 'role': 'user'},
+    {'email': 'user15@drone.com', 'password': 'securepass', 'displayName': 'User15', 'role': 'user'},
+    {'email': 'user16@drone.com', 'password': 'securepass', 'displayName': 'User16', 'role': 'user'},
+    {'email': 'user17@drone.com', 'password': 'securepass', 'displayName': 'User17', 'role': 'user'},
+    {'email': 'user18@drone.com', 'password': 'securepass', 'displayName': 'User18', 'role': 'user'},
+    {'email': 'user19@drone.com', 'password': 'securepass', 'displayName': 'User19', 'role': 'user'},
+    {'email': 'user20@drone.com', 'password': 'securepass', 'displayName': 'User20', 'role': 'user'},
+    {'email': 'user21@drone.com', 'password': 'securepass', 'displayName': 'User21', 'role': 'user'},
+    {'email': 'user22@drone.com', 'password': 'securepass', 'displayName': 'User22', 'role': 'user'},
+    {'email': 'user23@drone.com', 'password': 'securepass', 'displayName': 'User23', 'role': 'user'},
+    {'email': 'user24@drone.com', 'password': 'securepass', 'displayName': 'User24', 'role': 'user'},
+    {'email': 'user25@drone.com', 'password': 'securepass', 'displayName': 'User25', 'role': 'user'}
+
 ]
 
 # ======================== LIVE DATA STORAGE (LEGACY) ========================
@@ -2662,14 +2693,14 @@ def verify_otp():
                 (device_id, email)
             )
             conn.commit()
-        elif existing_device == device_id:
-            # Bound to a DIFFERENT device already — reject.
-            cur.close()
-            conn.close()
-            return jsonify({
-                'success': False,
-                'message': 'This account is already signed in on another device. Contact an admin to reset it.'
-            }), 403
+        # elif existing_device != device_id:
+        #     # Bound to a DIFFERENT device already — reject.
+        #     cur.close()
+        #     conn.close()
+        #     return jsonify({
+        #         'success': False,
+        #         'message': 'This account is already signed in on another device. Contact an admin to reset it.'
+        #     }), 403
         else:
             # Same device as before — normal login.
             cur.execute('UPDATE users SET last_login = NOW() WHERE email = %s', (email,))
